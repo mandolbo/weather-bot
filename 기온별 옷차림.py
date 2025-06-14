@@ -70,16 +70,16 @@ forecast = { (it["category"], it["fcstTime"] ): it["fcstValue"] for it in items}
 periods = {
     "오전" : "0800",
     "오후" : "1400",
-    "저녁" : "2000"
+    "저녁" : "1700"
 }
 
 ## 우산 판단 함수
 def need_umbrella(pop,pty,pcp):
-#비, 눈, 예보 + 실제 강수량 값이 3mm 이상상 있을 때만 우산 필요
-    if pty != "0" and pcp >= 3.0 :
+#비, 눈, 예보 + 실제 강수량 값이 1mm 이상 있을 때만 우산 필요
+    if pty != "0" and pcp >= 1.0 :
       return True
 # 비 안 와도 확률이 50%이상이면
-    if pop >= 50 and pcp >= 3.0 :
+    if pop >= 50 and pcp >= 1.0 :
         return True
     return False
 
@@ -102,7 +102,7 @@ for label, t in periods.items():
     if PTY != "0": #비 or 눈이 오는 경우
         desc = {"1":"비", "2":"눈", "3":"진눈깨비"}.get(PTY,"소나기") #1,2,3 이외 기본값을 "소나기"로 설정
     else: # 비 or 눈이 안오는 경우
-        desc = {"1":"맑음","3":"구름 많음"}.get(SKY,"흐림")
+        desc = {"1":"맑음", "2":"구름 조금", "3":"구름 많음"}.get(SKY,"흐림")
     
     ##3 옷차림 추천 함수
     def outfit(temp):
