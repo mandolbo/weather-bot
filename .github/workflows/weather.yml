@@ -2,8 +2,7 @@ name: Weather bot           # 대시보드에 표시될 워크플로 이름
 
 on:
   schedule:                 # 매일 아침 7시(한국시간 GMT+9) 실행
-    - cron:  '50 12 * * *'   # UTC 22:00 = KST 07:00
-  workflow_dispatch:        # Actions 탭에서 수동 실행 버튼도 활성화
+    - cron:  '20 13 * * *'   # UTC 22:00 = KST 07:00
 
 jobs:
   run-script:
