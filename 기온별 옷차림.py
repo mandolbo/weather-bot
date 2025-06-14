@@ -1,4 +1,5 @@
 import requests, datetime,os
+from pytz import timezone
 
 from dotenv import load_dotenv
 load_dotenv()                         # 실제 로드
@@ -16,26 +17,28 @@ HOOK = os.environ["SLACK_HOOK"] # Slack hook
 NX, NY = 60, 127
 
 # Base Time 계산 함수 (가장 최근 예보 발표 시각 설정)
-def get_base_time(now):
+def get_base_time(now_kst):
     # 기상청 단기예보 발표 시각(매 3시간 단위)
     times = ["0200","0500","0800","1100","1400","1700","2000","2300"]
     candidates = []
     for t in times:
         hh, mm = int(t[:2]), int(t[2:])
-        dt = datetime.datetime.combine(now.date(), datetime.time(hh,mm))
+        dt = datetime.datetime.combine(now_kst.date(), datetime.time(hh,mm),tzinfo=now_kst.tzinfo)
         candidates.append(dt)
     # 지금(now) 이전 중 가장 큰 시각
-    valid = [dt for dt in candidates if dt <= now]
+    valid = [dt for dt in candidates if dt <= now_kst]
     if valid:
         return max(valid).strftime("%H%M")
     # 만약 새벽 02시 발표 전이라면, 어제 23시 발표 사용
-    yesterday_23 = datetime.datetime.combine(now.date()-datetime.timedelta(days=1), datetime.time(23,0))
+    yesterday_23 = datetime.datetime.combine(now_kst.date()-datetime.timedelta(days=1), datetime.time(23,0), tzinfo=now_kst.tzinfo)
     return yesterday_23.strftime("%H%M")
 
 # 예보 API 호출 및 데이터 파싱
-now = datetime.datetime.now()
-base_time = get_base_time(now)
-base_date = now.strftime("%Y%m%d")
+utc_now = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
+kst_timezone=timezone('Asia/Seoul')
+now_kst = utc_now.astimezone(kst_timezone) # KST로 변환된 현재시각
+base_time = get_base_time(now_kst)
+base_date = now_kst.strftime("%Y%m%d")
 
 url = (
     "https://apihub.kma.go.kr/api/typ02/openApi/"
@@ -91,8 +94,6 @@ for label, t in periods.items():
     PCP_RAW = forecast.get(("PCP",t), "강수없음") #강수량 rawdata 코드
     PCP = 0.0 if PCP_RAW in ("강수없음", "적설없음") else float(PCP_RAW) # 강수량 : 강수X, 적설 X => 0.0 이외엔 실수화
 
-    print(f"{label} 예보 – POP={POP}%  PTY={PTY}  SKY={SKY}  PCP={PCP}")
-
 
     ##1 우산 안내
     umbrella = "☔ 우산 챙기세요!" if need_umbrella(POP,PTY,PCP) else ""
@@ -137,7 +138,7 @@ for label, t in periods.items():
 
 
 # Slack 메시지 조립 & 전송
-today= now.strftime("%m월 %d일 (%a)")
+today= now_kst.strftime("%m월 %d일 (%a)")
 lines = [f"*{today} 서울 날씨 예보*"] # f-string 문법구조로 문자열 내부에 변수를 넣을 수 있는 기능함
 for label, info in results.items():
     lines.append(
