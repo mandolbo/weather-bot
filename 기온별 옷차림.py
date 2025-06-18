@@ -1,177 +1,205 @@
-import requests
-import datetime
-import os
-from pytz import timezone
+###############################################################################
+# 0. 비밀 환경변수(.env) 불러오기
+#    - override=True  : 이미 등록된 환경변수도 .env 값으로 덮어쓴다
+###############################################################################
 from dotenv import load_dotenv
+import os, requests, datetime, pathlib
+from pytz import timezone
 
-# .env 파일에서 API 키와 Webhook URL을 로드
-load_dotenv()
-SERVICE_KEY = os.environ["SERVICE_KEY"]  # 기상청 API 키
-SLACK_HOOK = os.environ["SLACK_HOOK"]    # Slack Webhook URL
+BASE_DIR = pathlib.Path(__file__).resolve().parent   # 스크립트 폴더
+load_dotenv(BASE_DIR / ".env")      # 상대경로 → 경로 노출 없음
+# load_dotenv(override=True) ← 필요할 때만 덮어쓰기
 
-# 서울 격자 좌표 (nx, ny)
-NX, NY = 60, 127
+SERVICE_KEY = os.environ["SERVICE_KEY"]
+SLACK_HOOK  = os.environ["SLACK_HOOK"]       # Slack Webhook URL
 
-# 1) Base Time 계산 함수
-#    - KST 기준 현재 시각(now_kst) 이전에 발표된 가장 최근 예보 시각을 찾음
-#    - 기상청은 매 3시간 단위(0200, 0500, ...)로 예보를 발표함
-#    - 발표 전(02시 이전)일 경우 어제 23시 예보 사용
+# (선택) 키 길이 확인용
+# print("KEY LEN =", len(SERVICE_KEY), SERVICE_KEY[:8]+"...")
 
-def get_base_time(now_kst):
-    times = ["0200", "0500", "0800", "1100", "1400", "1700", "2000", "2300"]
-    candidates = []
+###############################################################################
+# 1. 기본 상수 – 서울 격자 좌표
+###############################################################################
+NX, NY = 60, 127       # 종로구. 다른 지역은 값만 바꾸면 된다.
+
+###############################################################################
+# 2. base_time 계산 함수
+###############################################################################
+def ultra_base(now: datetime.datetime) -> str:
+    """
+    초단기 실황/예보용 base_time (HH30)
+    - 45분 이전 호출 → 직전 HH30
+    - 45분 이후 호출 → 현재 HH30
+    """
+    tgt = now - datetime.timedelta(hours=1) if now.minute < 45 else now
+    return tgt.strftime("%H") + "30"
+
+def village_base(now: datetime.datetime) -> str:
+    """
+    단기(동네) 예보용 base_time (HH00)
+    - 02·05·08·11·14·17·20·23 시 중 가장 최근
+    """
+    slots = [2,5,8,11,14,17,20,23]
+    h = max(s for s in slots if s <= now.hour)
+    return f"{h:02d}00"
+
+###############################################################################
+# 3. 기상청 OPEN API 호출 함수 (공통)
+###############################################################################
+def fetch_kma(path:str, base_date:str, base_time:str) -> list[dict]:
+    """
+    path : getUltraSrtNcst / getUltraSrtFcst / getVilageFcst
+    typ02 포털은 파라미터명이 authKey !!!
+    성공 → item 리스트 반환, 실패 → 슬랙 경보 후 빈 리스트
+    """
+    url = (f"https://apihub.kma.go.kr/api/typ02/openApi/"
+           f"VilageFcstInfoService_2.0/{path}")
+
+    params = {
+        "authKey":  SERVICE_KEY,   # ← 구버전은 serviceKey, 신버전은 authKey
+        "dataType": "JSON",
+        "numOfRows": 1000,
+        "pageNo": 1,
+        "base_date": base_date,
+        "base_time": base_time,
+        "nx": NX, "ny": NY,
+    }
+
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()                       # HTTP 오류 → 예외
+        return r.json()["response"]["body"]["items"]["item"]
+    except Exception as e:
+        warn = f":rotating_light: KMA API 오류 · {path} · {e}"
+        print(warn)
+        requests.post(SLACK_HOOK, json={"text": warn})
+        return []                                  # 비어 있으면 후속 로직이 건너뜀
+
+###############################################################################
+# 4. 현재 시각(한국) 및 base_time 계산
+###############################################################################
+KST = timezone("Asia/Seoul")
+now = datetime.datetime.now(KST)
+
+base_date = now.strftime("%Y%m%d")    # 오늘 날짜(YYYYMMDD)
+u_base    = ultra_base(now)           # 초단기용 HH30
+v_base    = village_base(now)         # 단기용   HH00
+
+###############################################################################
+# 5. API 세 번 호출
+###############################################################################
+ncst   = fetch_kma("getUltraSrtNcst", base_date, u_base)   # 실황 (지금)
+ultra  = fetch_kma("getUltraSrtFcst", base_date, u_base)   # 30분 간격 6h
+village= fetch_kma("getVilageFcst",   base_date, v_base)   # 3시간 간격 24h
+
+###############################################################################
+# 6. (category, date, time) → value 딕셔너리로 병합
+#    실황은 obsrValue, 예보는 fcstValue 필드 사용
+###############################################################################
+fore: dict[tuple[str,str,str], str] = {}
+for item in (ncst + ultra + village):
+    d = item.get("fcstDate", item["baseDate"])   # 실황은 baseDate
+    t = item.get("fcstTime", item["baseTime"])   # 실황은 baseTime
+    val = item.get("fcstValue", item.get("obsrValue"))
+    if val is not None:
+        fore[(item["category"], d, t)] = val
+
+###############################################################################
+# 7. 오늘·내일 날짜 배열 / 조회 헬퍼
+###############################################################################
+tomorrow = (now + datetime.timedelta(days=1)).strftime("%Y%m%d")
+DATES = [base_date, tomorrow]
+
+def pick(cat:str, hhmm:str, default=None):
+    """cat·시간 → 오늘→내일 순으로 찾기"""
+    for d in DATES:
+        v = fore.get((cat, d, hhmm))
+        if v is not None:
+            return v
+    return default
+
+###############################################################################
+# 8. 시간대 구간 정의
+###############################################################################
+periods = {
+    "오전":  [f"{h:02d}00" for h in range(8, 13)],
+    "오후":  [f"{h:02d}00" for h in range(13, 18)],
+    "저녁":  [f"{h:02d}00" for h in range(18, 24)],
+}
+
+###############################################################################
+# 9. 우산·하늘·옷차림 보조 데이터
+###############################################################################
+PTY = {"0":"", "1":"비", "2":"비/눈", "3":"눈", "4":"소나기",
+       "5":"빗방울", "6":"빗방울/눈날림", "7":"눈날림"}
+SKY = {"1":"맑음", "2":"구름 조금", "3":"구름 많음", "4":"흐림"}
+
+def need_umbrella(pop:int, pty:str, rn1:float) -> bool:
+    return (pty!="0") or (rn1>=1.0) or (pop>=60)
+
+def outfit(temp:float)->str:
+    if temp>=28: return "🥵 민소매·반팔"
+    if temp>=23: return "☀️ 반팔, 얇은 셔츠"
+    if temp>=20: return "🌤 얇은 가디건"
+    if temp>=17: return "🍃 맨투맨, 가디건"
+    if temp>=12: return "🍂 자켓, 니트"
+    if temp>= 5: return "🧣 코트, 히트텍"
+    return        "❄️ 패딩, 목도리"
+
+###############################################################################
+# 10. 시간대별 계산 & Slack 메시지 조립
+###############################################################################
+lines=[]
+for label, times in periods.items():
+    temps, pops, rn1s, ptys, skys = [], [], [], [], []
+
     for t in times:
-        hh, mm = int(t[:2]), int(t[2:])
-        dt = datetime.datetime.combine(
-            now_kst.date(),
-            datetime.time(hh, mm),
-            tzinfo=now_kst.tzinfo
-        )
-        candidates.append(dt)
+        temp = pick("TMP", t) or pick("T1H", t)   # TMP(3h) 우선, 없으면 T1H(1h/실황)
+        if temp is None:
+            continue
 
-    valid = [dt for dt in candidates if dt <= now_kst]
-    if valid:
-        return max(valid).strftime("%H%M")
+        pop  = int(pick("POP", t, 0))
+        pty  = pick("PTY", t, "0")
+        sky  = pick("SKY", t, "1")
+        rn1_raw = pick("RN1", t, "0")
 
-    # 새벽 02시 이전에는 어제 23시 예보 사용
-    yesterday_23 = datetime.datetime.combine(
-        now_kst.date() - datetime.timedelta(days=1),
-        datetime.time(23, 0),
-        tzinfo=now_kst.tzinfo
-    )
-    return yesterday_23.strftime("%H%M")
+        # RN1 문자열 → mm 숫자
+        if rn1_raw in ("강수없음","-",""): rn1=0.0
+        elif "mm 미만" in str(rn1_raw):    rn1=0.5
+        else:                              rn1=float(rn1_raw)
 
-# 2) 현재 시각을 UTC에서 KST로 변환
-utc_now = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
-kst_timezone = timezone('Asia/Seoul')
-now_kst = utc_now.astimezone(kst_timezone)
+        temps.append(float(temp)); pops.append(pop)
+        rn1s.append(rn1); ptys.append(pty); skys.append(sky)
 
-# 3) 발표 날짜와 시간 계산
-base_time = get_base_time(now_kst)
-base_date = now_kst.strftime("%Y%m%d")  # YYYYMMDD 형식
-
-# 4) 기상청 단기예보 API 호출
-url = (
-    "https://apihub.kma.go.kr/api/typ02/openApi/"
-    "VilageFcstInfoService_2.0/getVilageFcst"
-)
-params = {
-    "authKey": SERVICE_KEY,
-    "pageNo": 1,
-    "numOfRows": 1000,
-    "dataType": "JSON",
-    "base_date": base_date,
-    "base_time": base_time,
-    "nx": NX,
-    "ny": NY,
-}
-resp = requests.get(url, params=params, timeout=10)
-resp.raise_for_status()
-items = resp.json()["response"]["body"]["items"]["item"]
-
-# 5) 받은 데이터를 (category, fcstTime) 키로 매핑
-forecast = { (it["category"], it["fcstTime"]): it["fcstValue"] for it in items }
-
-# 6) 시간대별 예보 시각 모음
-period_times = {
-    "오전": ["0800", "0900", "1000", "1100"],  # 8시~11시
-    "오후": ["1200", "1300", "1400", "1500", "1600", "1700"],  # 12시~17시
-    "저녁": ["1800", "1900", "2000", "2100", "2200", "2300"],  # 18시~23시
-}
-
-# 7) 우산 판단 함수
-#    - PTY(강수 형태)와 PCP(강수량)를 우선 고려
-#    - PTY가 0이 아니고 실제 강수량 > 0일 때만 우산 필요
-#    - 그 외 POP/PCP 기준으로 보수적 판단
-
-def need_umbrella(pop, pty, pcp):
-    if pty != "0" and pcp > 0:      # 실제 비/눈 예보 + 강수량
-        return True
-    if pop >= 70:                     # 강수 확률 70% 이상
-        return True
-    if pcp >= 1.0:                    # 강수량 1mm 이상
-        return True
-    return False
-
-# 8) PTY/SKY 우선순위 정의 (낮을수록 우선)
-PTY_PRIORITY = {"1":1, "2":1, "3":1, "4":1, "5":2, "6":2, "7":2, "0":99}
-SKY_PRIORITY = {"4":1, "3":2, "2":3, "1":4}
-
-# 9) 결과 집계 및 메시지 조립
-results = {}
-for label, times_list in period_times.items():
-    temps, pops, pcps, ptys, skys = [], [], [], [], []
-    for t in times_list:
-        temps.append(float(forecast.get(("TMP", t), 0)))
-        pops.append(int(forecast.get(("POP", t), 0)))
-        raw = forecast.get(("PCP", t), "강수없음")
-        if raw in ("강수없음","적설없음","-",None,""):
-            pcps.append(0.0)
-        elif "mm 미만" in raw:             # 예: "1mm 미만"
-            pcps.append(0.5)               # 대표값 0.5mm
-        elif "~" in raw:                  # 예: "1~4.9"
-            low, high = map(float, raw.split("~"))
-            pcps.append((low+high)/2)
-        else:
-            try:
-                pcps.append(float(raw))
-            except ValueError:
-                pcps.append(0.0)
-        ptys.append(forecast.get(("PTY", t), "0"))
-        skys.append(forecast.get(("SKY", t), "1"))
+    if not temps:            # 해당 구간에 아무 데이터도 없으면 건너뜀
+        continue
 
     avg_temp = sum(temps)/len(temps)
     max_pop  = max(pops)
-    max_pcp  = max(pcps)
-    final_pty = sorted(ptys, key=lambda x: PTY_PRIORITY.get(x,99))[0]
-    final_sky = sorted(skys, key=lambda x: SKY_PRIORITY.get(x,4))[0]
+    max_rn1  = max(rn1s)
+    final_pty= sorted(ptys, key=lambda x:(x=="0", x))[0]
+    final_sky= SKY[sorted(skys)[0]]
 
-    print(f"{label} 집계 – 기온={avg_temp:.1f}°C, POP={max_pop}%, PCP={max_pcp}mm, PTY={final_pty}, SKY={final_sky}")
+    desc = PTY[final_pty] if final_pty!="0" else final_sky
+    umb  = "☔ 우산!" if need_umbrella(max_pop, final_pty, max_rn1) else ""
 
-    umbrella = "☔ 우산 챙기세요!" if need_umbrella(max_pop, final_pty, max_pcp) else ""
-
-    if final_pty != "0":
-        desc_map = {"1":"비","2":"비/눈","3":"눈","4":"소나기","5":"빗방울","6":"이슬비/눈날림","7":"눈날림"}
-        desc = f"{desc_map.get(final_pty,'알 수 없음')} (강수확률 {max_pop}% )"
-    else:
-        sky_map = {"1":"맑음","2":"구름 조금","3":"구름 많음","4":"흐림"}
-        desc = f"{sky_map.get(final_sky,'흐림')} (비 올 가능성 {max_pop}% )" if max_pop>=50 else sky_map.get(final_sky,'흐림')
-
-    def outfit(temp):
-        if temp >= 28:
-            return "🥵 매우 더움 → 민소매, 반팔·반바지, 원피스"
-        elif temp >= 23:
-            return "☀️ 더움 → 반팔, 얇은 셔츠, 반바지, 면바지"
-        elif temp >= 20:
-            return "🌤 따뜻 → 얇은 가디건, 긴팔 면바지, 청바지"
-        elif temp >= 17:
-            return "🍃 선선 → 얇은 니트, 맨투맨, 가디건, 청바지"
-        elif temp >= 12:
-            return "🍂 시원 → 자켓, 가디건, 야상, 청바지, 면바지"
-        elif temp >= 9:
-            return "🍁 서늘 → 자켓, 트렌치코트, 야상, 니트, 청바지, 스타킹"
-        elif temp >= 5:
-            return "🧣 쌀쌀 → 코트, 가죽자켓, 히트텍, 니트, 레깅스"
-        else:
-            return "❄️ 매우 추움 → 패딩, 두꺼운 코트, 목도리, 기모제품"
-
-    results[label] = {
-        "temp": avg_temp,
-        "pop": max_pop,
-        "desc": desc,
-        "outfit": outfit(avg_temp),
-        "umbrella": umbrella,
-    }
-
-# 10) Slack 메시지 전송
-today_str = now_kst.strftime("%m월 %d일 (%a)")
-lines = [f"*{today_str} 서울 날씨 예보*"]
-for lbl, info in results.items():
     lines.append(
-        f"{lbl} *{info['temp']:.1f}°C* ... {info['desc']}\n"
-        f"> 옷차림: {info['outfit']} {info['umbrella']}"
+        f"{label} *{avg_temp:.1f}°C* · {desc} (강수확률 {max_pop}%)\n"
+        f"> 옷차림 : {outfit(avg_temp)} {umb}"
     )
-text = "\n\n".join(lines)
-requests.post(SLACK_HOOK, json={"text": text})
-print("슬랙으로 예보 전송 완")
-print("DEBUG ▶", now_kst, base_date, base_time)
+
+###############################################################################
+# 11. Slack 전송
+###############################################################################
+if lines:
+    title = f"*{now.strftime('%m월 %d일 (%a)')} 서울 날씨*"
+    payload = {"text": title + "\n\n" + "\n\n".join(lines)}
+    requests.post(SLACK_HOOK, json=payload)
+    print("✅ Slack 전송 완료")
+else:
+    warn=":warning: 예보 데이터가 없어 메시지를 보내지 못했습니다."
+    print(warn); requests.post(SLACK_HOOK, json={"text":warn})
+
+###############################################################################
+# (끝) – 하루 한 번 크론/작업스케줄러/깃허브액션 등에 올리면
+#        최신 서울 예보를 슬랙으로 자동 알림받을 수 있습니다.
+###############################################################################
