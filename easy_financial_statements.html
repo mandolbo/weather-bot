@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>쉽게 배우는 재무제표</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', '맑은 고딕', Arial, sans-serif;
+            background: #f4f8fb;
+            color: #222;
+            margin: 0;
+            padding: 0;
+        }
+        header {
+            background: #1976d2;
+            color: #fff;
+            padding: 30px 0 20px 0;
+            text-align: center;
+            box-shadow: 0 2px 8px #b3c6e0;
+        }
+        main {
+            max-width: 700px;
+            margin: 30px auto;
+            background: #fff;
+            border-radius: 16px;
+            box-shadow: 0 2px 12px #dbeafe;
+            padding: 32px 28px 40px 28px;
+        }
+        h2 {
+            color: #1976d2;
+            margin-top: 32px;
+        }
+        .icon {
+            font-size: 2.2em;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+        .example-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 18px 0 24px 0;
+        }
+        .example-table th, .example-table td {
+            border: 1px solid #b3c6e0;
+            padding: 8px 12px;
+            text-align: center;
+        }
+        .example-table th {
+            background: #e3f2fd;
+        }
+        .tip {
+            background: #e3f2fd;
+            border-left: 5px solid #1976d2;
+            padding: 10px 16px;
+            margin: 18px 0;
+            border-radius: 6px;
+        }
+        ul {
+            margin-top: 0;
+        }
+    </style>
+</head>
+<body>
+<header>
+    <h1>💡 쉽게 배우는 재무제표</h1>
+    <p>재무제표가 궁금한 분들을 위한 아주 쉬운 설명!</p>
+</header>
+<main>
+    <h2><span class="icon">📄</span>재무제표란?</h2>
+    <p>재무제표는 기업의 돈의 흐름과 상태를 한눈에 보여주는 표입니다.<br>
+    쉽게 말해, <b>회사의 건강검진표</b>라고 할 수 있어요.</p>
+    <div class="tip">
+        <b>재무제표의 3대장</b><br>
+        1. 재무상태표(대차대조표)<br>
+        2. 손익계산서<br>
+        3. 현금흐름표
+    </div>
+
+    <h2><span class="icon">🏦</span>재무상태표(대차대조표)</h2>
+    <p>특정 시점에 회사가 <b>무엇을 가지고(자산)</b> 있고, <b>어떻게 빚(부채)</b>을 내었으며, <b>남은 몫(자본)</b>이 얼마인지 보여줍니다.</p>
+    <table class="example-table">
+        <tr><th>자산</th><th>=</th><th>부채</th><th>+</th><th>자본</th></tr>
+        <tr><td>100</td><td>=</td><td>40</td><td>+</td><td>60</td></tr>
+    </table>
+    <ul>
+        <li><b>자산</b>: 회사가 가진 것(현금, 건물, 재고 등)</li>
+        <li><b>부채</b>: 갚아야 할 돈(대출, 외상 등)</li>
+        <li><b>자본</b>: 주인(주주)의 몫</li>
+    </ul>
+
+    <h2><span class="icon">💰</span>손익계산서</h2>
+    <p>일정 기간 동안 <b>얼마를 벌고(수익)</b>, <b>얼마를 썼는지(비용)</b>를 보여줍니다.<br>
+    결국 <b>얼마가 남았는지(이익)</b> 알 수 있어요.</p>
+    <table class="example-table">
+        <tr><th>수익</th><th>-</th><th>비용</th><th>=</th><th>이익</th></tr>
+        <tr><td>200</td><td>-</td><td>150</td><td>=</td><td>50</td></tr>
+    </table>
+    <ul>
+        <li><b>수익</b>: 물건 팔아서 번 돈</li>
+        <li><b>비용</b>: 물건 만들고, 운영하며 쓴 돈</li>
+        <li><b>이익</b>: 남은 돈(=순이익)</li>
+    </ul>
+
+    <h2><span class="icon">💵</span>현금흐름표</h2>
+    <p>회사의 <b>현금이 실제로 어떻게 들어오고 나갔는지</b>를 보여줍니다.<br>
+    장부상 이익과 실제 현금은 다를 수 있기 때문에 중요해요!</p>
+    <table class="example-table">
+        <tr><th>영업활동</th><th>투자활동</th><th>재무활동</th></tr>
+        <tr><td>+60</td><td>-30</td><td>+10</td></tr>
+    </table>
+    <ul>
+        <li><b>영업활동</b>: 본업에서 들어온/나간 현금</li>
+        <li><b>투자활동</b>: 설비, 주식 등 투자에 쓴 현금</li>
+        <li><b>재무활동</b>: 대출, 자본 조달 등에서 들어온/나간 현금</li>
+    </ul>
+
+    <div class="tip">
+        <b>정리!</b><br>
+        - 재무상태표: 지금 가진 것과 빚, 내 몫<br>
+        - 손익계산서: 얼마 벌고 썼는지<br>
+        - 현금흐름표: 실제 현금의 이동
+    </div>
+</main>
+</body>
+</html> 
