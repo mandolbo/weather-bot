@@ -192,7 +192,8 @@ for label, times in periods.items():
 ###############################################################################
 if lines:
     title = f"*{now.strftime('%m월 %d일 (%a)')} 서울 날씨*"
-    payload = {"text": title + "\n\n" + "\n\n".join(lines)}
+    message_text=f"@channel {title}\n\n" + "\n\n".join(lines)
+    payload = {"text": message_text}
     requests.post(SLACK_HOOK, json=payload)
     print("✅ Slack 전송 완료")
 else:
